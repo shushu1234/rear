@@ -156,7 +156,7 @@ generate_layout_dependencies() {
                 vgrp=$(echo "$remainder" | cut -d " " -f "1")
                 lvol=$(echo "$remainder" | cut -d " " -f "2")
                 # When a LV is a Thin, then we need to create the Thin Pool first
-                pool=$(echo "$remainder" | egrep -ow "thinpool:\\S+" | cut -d ":" -f 2)
+                pool=$(echo "$remainder" | grep -Eow "thinpool:\\S+" | cut -d ":" -f 2)
 
                 # Vgs and Lvs containing - in their name have a double dash in DM
                 dm_vgrp=${vgrp//-/--}
@@ -195,7 +195,7 @@ generate_layout_dependencies() {
                     if [ "${mp#$temp_dep_mp}" != "${mp}" ] && [ "$mp" != "$dep_mp" ]; then
                         add_dependency "$type:$mp" "$dep_type:$dep_mp"
                     fi
-                done < <( egrep '^fs |^btrfsmountedsubvol ' $LAYOUT_FILE )
+                done < <( grep -E '^fs |^btrfsmountedsubvol ' $LAYOUT_FILE )
                 ;;
             swap)
                 dev=$(echo "$remainder" | cut -d " " -f "1")
@@ -274,7 +274,7 @@ mark_as_done() {
 # Mark all components that depend on component $1 as done.
 mark_tree_as_done() {
     for component in $( get_child_components "$1" ) ; do
-        DebugPrint "Dependant component $component is a child of component $1"
+        DebugPrint "Dependent component $component is a child of component $1"
         mark_as_done "$component"
     done
 }
@@ -428,8 +428,9 @@ get_partition_number() {
     # I <jsmeix@suse.de> found https://github.com/rear/rear/commit/e758bba0a415173952cc588e5cf80570a6385f7e that links to
     # https://github.com/rear/rear/issues/263 that contains https://github.com/rear/rear/issues/263#issuecomment-20464763
     # which reads (excerpt): "The GPT standard allows maximum of 128 partitions per disk" which is not true
-    # according to how I understand the German https://de.wikipedia.org/wiki/GUID_Partition_Table that reads (excerpt)
-    # "Die EFI-Spezifikationen schreiben ein Minimum von 16384 Bytes für die Partitionstabelle vor, so dass es Platz für 128 Einträge gibt."
+    # according to how I understand the German https://de.wikipedia.org/wiki/GUID_Partition_Table that reads
+    # (excerpt, umlauts written as 'ae' and 'ue' to get ASCII see https://github.com/rear/rear/wiki/Coding-Style#character-encoding)
+    # "Die EFI-Spezifikationen schreiben ein Minimum von 16384 Bytes fuer die Partitionstabelle vor, so dass es Platz fuer 128 Eintraege gibt."
     # in English "EFI specification mandate a minimum of 16384 bytes for the partition table so that there is space for 128 entries"
     # which matches the English https://en.wikipedia.org/wiki/GUID_Partition_Table that reads (excerpt)
     # "The UEFI specification stipulates that a minimum of 16384 bytes ... are allocated for the Partition Entry Array. Each entry has a size of 128 bytes."
@@ -530,6 +531,33 @@ get_partition_start() {
 # Get the type of a layout component
 get_component_type() {
     grep -E "^[^ ]+ $1 " $LAYOUT_TODO | cut -d " " -f 3
+}
+
+# Get the disklabel (partition table) type of the disk $1 from the layout file
+# (NOT from the actual disk, so layout file must exist before calling this,
+# and it is useful during recovery even before the disk layout has been recreated)
+function get_disklabel_type () {
+    # from create_disk() in layout/prepare/GNU/Linux/100_include_partition_code.sh
+    local component disk size label junk
+
+    disk=''
+
+    read component disk size label junk < <(grep -E "^(disk|multipath) $1 " "$LAYOUT_FILE")
+    test $disk || return 1
+
+    echo $label
+}
+
+# Get partition flags from layout (space-separated) of partition given as $1
+function get_partition_flags () {
+    local part disk size pstart name flags partition junk
+
+    while read part disk size pstart name flags partition junk; do
+        if [ "$partition" == "$1" ] ; then
+            echo "$flags" | tr ',' ' '
+            return 0
+        fi
+    done < <(grep "^part " $LAYOUT_FILE)
 }
 
 # Function returns 0 when v1 is greater or equal than v2
@@ -806,23 +834,58 @@ blkid_label_of_device() {
     echo "$label"
 }
 
-# Returns 1 if the device is an LVM physical volume
-# Returns 0 otherwise or if the device doesn't exists
+# Returns true if the device is an LVM physical volume
+# Returns false otherwise or if the device doesn't exist
 is_disk_a_pv() {
     disk=$1
 
     # Using awk, select the 'lvmdev' line for which $disk is the device (column 3),
     # cf. https://github.com/rear/rear/pull/1897
     # If exit == 1, then there is such line (so $disk is a PV),
-    # otherwise exit with default value '0', which falls through to 'return 0' below.
-    awk "\$1 == \"lvmdev\" && \$3 == \"${disk}\" { exit 1 }" "$LAYOUT_FILE" >/dev/null || return 1
-    return 0
+    # otherwise exit with default value '0', which falls through to 'return 1' below.
+    awk "\$1 == \"lvmdev\" && \$3 == \"${disk}\" { exit 1 }" "$LAYOUT_FILE" >/dev/null || return 0
+    return 1
+}
+
+# Check whether disk is suitable for being added to layout
+# Can be used to skip obviously unsuitable/broken devices
+# (missing device node, zero size, device can't be opened).
+# Should not be used to skip potential mapping targets before layout restoration
+# - an invalid disk may become valid later, for example if it is a DASD that needs
+# low-level formatting (see 090_include_dasd_code.sh and 360_generate_dasd_format_code.sh),
+# unformatted DASDs show zero size.
+# Returns 0 if the device is ok
+# Returns nonzero code if it should be skipped, and a text describing the error
+# on stdout
+# usage example:
+# local err
+# if ! err=$(is_disk_valid /dev/sda); then
+
+function is_disk_valid {
+    local disk="$1"
+    local size
+
+    if ! test -b "$disk" ; then
+        echo "$disk is not a block device"
+        return 1
+    fi
+    # capture stdout in a variable and redirect stderr to stdout - the error message
+    # will be our output
+    if { size=$(blockdev --getsize64 "$disk") ; } 2>&1 ; then
+        if ! test "$size" -gt 0 2>/dev/null ; then
+            echo "$disk has invalid size $size"
+            return 1
+        fi
+        return 0
+    else
+        return 1
+    fi
 }
 
 function is_multipath_used {
     # Return 'false' if there is no multipath command:
     type multipath &>/dev/null || return 1
-    # 'multipath -l' is the only simple and reliably working commad
+    # 'multipath -l' is the only simple and reliably working command
     # to find out in general whether or not multipath is used at all.
     # But 'multipath -l' scans all devices and the time it takes is proportional
     # to their number so that time would become rather long (seconds up to minutes)
@@ -927,6 +990,8 @@ function UdevQueryName() {
 }
 
 # Guess the part device name from a device, based on the OS distro Level.
+# See https://github.com/rear/rear/commit/14c062627e15d3be799b1a8bd220634a0aa032b9
+# which belongs to https://github.com/rear/rear/pull/1450
 function get_part_device_name_format() {
     if [ -z "$1" ] ; then
         BugError "get_part_device_name_format function called without argument (device)"
@@ -941,7 +1006,7 @@ function get_part_device_name_format() {
             part_name="${device_name}p" # append p between main device and partitions
             ;;
         (*mapper[/!]*)
-            # Every Linux distribution / version has their own rule to name the multipthed partion device.
+            # Every Linux distribution / version has their own rule to name the multipthed partition device.
             #
             # Suse:
             #     Version <12 : always <device>_part<part_num> (same with/without user_friendly_names)
@@ -979,24 +1044,10 @@ function get_part_device_name_format() {
                 ;;
 
                 (Fedora)
-                    if is_false "$user_friendly_names" ; then
-                        # RHEL 7 and above seems to named partitions on multipathed devices with
-                        # [mpath device UUID/WWID] + p + [part number] when "user_friendly_names"
-                        # option is FALSE.
-                        # For example: /dev/mapper/3600507680c82004cf8000000000000d8p1
-                        part_name="${device_name}p" # append p between main device and partitions
-                    else
-                        # RHEL 7 and above seems to named partitions on multipathed devices with
-                        # [mpath device name] + [part number] like standard disk when "user_friendly_names"
-                        # option is used (default).
-                        # For example: /dev/mapper/mpatha1
-                        # But the scheme in RHEL 6 need a "p" between [mpath device name] and [part number].
-                        # For exemple: /dev/mapper/mpathap1
-                        if (( $OS_MASTER_VERSION < 7 )) ; then
-                            part_name="${device_name}p" # append p between main device and partitions
-                        else
-                            part_name="${device_name}"
-                        fi
+                    # RHEL 7 and above add a "p" after the device name when the device name ends
+                    # by a digit, see https://access.redhat.com/solutions/2354631.
+                    if (( $OS_MASTER_VERSION < 7 )) || [[ ${device_name: -1} =~ [0-9] ]]; then
+                        part_name="${device_name}p"
                     fi
                 ;;
 
@@ -1086,10 +1137,10 @@ function apply_layout_mappings() {
     # Step 0:
     # For each original device in the mapping file generate a unique word (the "replacement").
     # Step 1:
-    # In file_to_migrate temporarily replace all original devices with their matching unique word.
+    # In file_to_migrate replace (temporarily) all original devices with their matching unique word.
     # E.g. "disk sda and disk sdb" would become "disk _REAR0_ and disk _REAR1_" temporarily in file_to_migrate.
     # Step 2:
-    # In file_to_migrate replace all unique replacement words with the matching target device of the source device.
+    # In file_to_migrate re-replace all unique replacement words with the matching target device of the source device.
     # E.g. for "sda -> sdb and sdb -> sda" in the mapping file and the unique words _REAR0_ for sda and _REAR1_ for sdb
     # "disk _REAR0_ and disk _REAR1_" would become "disk sdb and disk sda" in the final file_to_migrate
     # so that the circular replacement "sda -> sdb and sdb -> sda" is done in file_to_migrate.
@@ -1151,22 +1202,32 @@ function apply_layout_mappings() {
     while read original replacement junk ; do
         # Skip lines that have wrong syntax:
         test "$original" -a "$replacement" || continue
-        # Replace partitions with unique replacement PATTERN (we normalize cciss/c0d0p1 to _REAR5_1)
-        # Due to multipath partion naming complexity, all known partition naming type (mpatha1,mpathap1,mpatha-part1,mpatha_part1) will be replaced by _REAR"X"_1
+        # Replace partitions with unique replacement words:
+        # For example we normalize /dev/cciss/c0d1p2 to something like _REAR5_2
+        # (therein the '5' is arbitrary but the '2' is the actual partition number).
+        # Due to multipath partition naming complexity, all known partition naming types for example
+        # /dev/mapper/mpatha4 /dev/mapper/mpathap4 /dev/mapper/mpatha-part4 /dev/mapper/mpatha_part4
+        # are replaced by the same normalized replacement word like _REAR7_4
+        # (therein the '7' is arbitrary but the '4' is the actual partition number)
+        # that is then in step 2 re-replaced with the right partition naming scheme
+        # via the get_part_device_name_format() function,
+        # cf. https://github.com/rear/rear/pull/1765
+        # Because $original (e.g. /dev/sda1) contains slashes sed '/regexp/' cannot be used
+        # so sed '\|regexp|' is used (under the assumption that no | characters are in $original):
         sed -i -r "\|$original|s|$original(p)*([-_]part)*([0-9]+)|$replacement\3|g" "$file_to_migrate"
-        # Replace whole devices
+        # Replace whole devices with unique replacement words:
         # Note that / is a word boundary, so is matched by \<, hence the extra /
         sed -i -r "\|$original|s|/\<${original#/}\>|${replacement}|g" "$file_to_migrate"
     done < "$replacement_file"
 
     # Step 2:
-    # Replace all unique replacement words with the matching target device of the source device in the mapping file.
+    # Re-replace all unique replacement words with the matching target device of the source device in the mapping file.
     # E.g. when the file_to_migrate content was in step 1 above temporarily changed to
     #   disk _REAR0_
     #   disk _REAR1_
     #   disk _REAR3_
     #   disk _REAR2_
-    # it will now get finally replaced (with the replacement file and mapping file contents in step 0 above) by
+    # it will now get finally re-replaced (with the replacement file and mapping file contents in step 0 above) by
     #   disk /dev/sdb
     #   disk /dev/sda
     #   disk _REAR3_
@@ -1178,9 +1239,11 @@ function apply_layout_mappings() {
         test "$source" -a "$target" || continue
         # Skip when there is no replacement:
         replacement=$( get_replacement "$source" ) || continue
-        # Replace whole device:
+        # Re-replace whole devices:
+        # Use the same sed '\|regexp|s...' syntax as in step 1 above also here to be on the safe side
+        # (there are no slashes in $replacement like '_REAR0_' but $target like '/dev/sda' contains slashes):
         sed -i -r "\|$replacement|s|$replacement\>|$target|g" "$file_to_migrate"
-        # Replace partitions:
+        # Re-replace partitions:
         target=$( get_part_device_name_format "$target" )
         sed -i -r "\|$replacement|s|$replacement([0-9]+)|$target\1|g" "$file_to_migrate"
     done < <( grep -v '^#' "$MAPPING_FILE" )
@@ -1410,7 +1473,7 @@ create_disk_partition() {
 # delete_dummy_partitions_and_resize_real_ones()
 #
 # When current disk has non-consecutive partitions, delete temporary partitions
-# that have been created and resize the temporary shrinked partitions to their
+# that have been created and resize the temporary shrunk partitions to their
 # expected size.
 #
 delete_dummy_partitions_and_resize_real_ones() {
@@ -1433,7 +1496,7 @@ delete_dummy_partitions_and_resize_real_ones() {
     dummy_partitions_to_delete=()
     my_udevsettle
 
-    # Resize previously shrinked partitions (to make place for dummy
+    # Resize previously shrunk partitions (to make place for dummy
     # partitions) to expected size
     local -i endB
     while read num endB ; do

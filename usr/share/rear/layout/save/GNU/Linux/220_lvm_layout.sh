@@ -18,7 +18,7 @@ local already_processed_lvs=()
 local lv_layout_supported lvs_fields
 local origin lv vg
 local layout modules
-local thinpool chunksize stripes stripesize segmentsize
+local thinpool chunksize stripes stripesize segmentsize poolmetadatasize
 local kval infokval
 local lvs_exit_code
 
@@ -130,7 +130,7 @@ local lvs_exit_code
             echo "# Skipping PV $pdev that is not part of a valid VG (VG '$vgrp' empty or more than one word):"
             contains_visible_char "$vgrp" || vgrp='<missing_VG>'
             echo "# lvmdev /dev/$vgrp $pdev $uuid $size"
-            # Continue with the next line in the output of "lvm pvdisplay -c"
+            # Continue with the next line in the output of "lvm pvdisplay -C"
             continue
         fi
         # With the above example the output is:
@@ -138,10 +138,10 @@ local lvs_exit_code
         echo "lvmdev /dev/$vgrp $pdev $uuid $size"
 
     done
-    # Check the exit code of "lvm pvdisplay -c"
-    # in the "lvm pvdisplay -c | while read line ; do ... done" pipe:
+    # Check the exit code of "lvm pvdisplay -C"
+    # in the "lvm pvdisplay -C ... | while read line ; do ... done" pipe:
     pvdisplay_exit_code=${PIPESTATUS[0]}
-    test $pvdisplay_exit_code -eq 0 || Error "LVM command 'lvm pvdisplay -c' failed with exit code $pvdisplay_exit_code"
+    test $pvdisplay_exit_code -eq 0 || Error "LVM command 'lvm pvdisplay -C ... -o pv_name,vg_name,pv_size,pv_uuid' failed with exit code $pvdisplay_exit_code"
 
     # Get the volume group configuration:
     # Format: lvmgrp <volume_group> <extentsize> [<size(extents)>] [<size(bytes)>]
@@ -200,18 +200,18 @@ local lvs_exit_code
 
     # Specify the fields for the lvs command depending on whether or not the 'lv_layout' field is supported:
     if is_true $lv_layout_supported ; then
-        lvs_fields="origin,lv_name,vg_name,lv_size,lv_layout,pool_lv,chunk_size,stripes,stripe_size,seg_size"
+        lvs_fields="origin,lv_name,vg_name,lv_size,lv_layout,pool_lv,chunk_size,stripes,stripe_size,seg_size,lv_metadata_size"
     else
         # Use the 'modules' field as fallback replacement when the 'lv_layout' field is not supported:
-        lvs_fields="origin,lv_name,vg_name,lv_size,modules,pool_lv,chunk_size,stripes,stripe_size,seg_size"
+        lvs_fields="origin,lv_name,vg_name,lv_size,modules,pool_lv,chunk_size,stripes,stripe_size,seg_size,lv_metadata_size"
     fi
 
     # Example output of "lvs --separator=':' --noheadings --units b --nosuffix -o $lvs_fields"
-    # with lvs_fields="origin,lv_name,vg_name,lv_size,lv_layout,pool_lv,chunk_size,stripes,stripe_size,seg_size"
+    # with lvs_fields="origin,lv_name,vg_name,lv_size,lv_layout,pool_lv,chunk_size,stripes,stripe_size,seg_size,lv_metadata_size"
     # i.e. when the 'lv_layout' field is supported:
-    #   :home:system:6148849664:linear::0:1:0:6148849664
-    #   :root:system:14050918400:linear::0:1:0:14050918400
-    #   :swap:system:1262485504:linear::0:1:0:1262485504
+    #   :home:system:6148849664:linear::0:1:0:6148849664:
+    #   :root:system:14050918400:linear::0:1:0:14050918400:
+    #   :swap:system:1262485504:linear::0:1:0:1262485504:
     # There are two leading blanks in the output (at least on SLES12-SP4 with LVM 2.02.180 and SLES15-SP3 with LVM 2.03.05).
     # The 'lvs' output lines ordering does not match the ordering of the LVs kernel device nodes /dev/dm-N
     #   # lsblk -ipbo NAME,KNAME,TYPE,FSTYPE,SIZE,MOUNTPOINT /dev/sda2
@@ -229,32 +229,32 @@ local lvs_exit_code
     # /dev/mapper/system-swap /dev/mapper/system-root /dev/mapper/system-home
     # cf. https://github.com/rear/rear/pull/2291#issuecomment-567933705
     # Therefore we can re-order the 'lvs' output lines as we need it to make "rear recover" behave more fail safe
-    # when it is run on a bit smaller replacement disk(s) so one or more LVs need to be automatically shrinked a bit.
+    # when it is run on a bit smaller replacement disk(s) so one or more LVs need to be automatically shrink a bit.
     # The automated LVs shrinking is not intended when replacement disk(s) are substantially smaller.
     # To migrate onto a substantially smaller replacement disk the user must in advance
     # manually adapt his disklayout.conf file before he runs "rear recover".
     # The basic idea to automatically shrink LVs is to implement a "minimal changes" approach
     # cf. "minimal changes" in layout/prepare/default/420_autoresize_last_partitions.sh
     # where the "minimal changes" approach is here to only shrink one single LV per disk if needed.
-    # A LV needs to be shrinked only if it is not possible to recreate all LVs with their specified size
+    # A LV needs to shrink only if it is not possible to recreate all LVs with their specified size
     # i.e. when during "rear recover" 'lvcreate' fails with "Volume group ... has insufficient free space".
     # In this case 'lvcreate' is called again where the exact size option of the form '-L 123456b'
     # is replaced with an option to use all remaining free space in the VG via '-l 100%FREE'
     # so e.g. 'lvcreate -L 123456b -n LV VG' becomes 'lvcreate -l 100%FREE -n LV VG'
     # see layout/prepare/GNU/Linux/110_include_lvm_code.sh
-    # The most reasonable LVs that can be shrinked a bit with a "minimal changes" approach are the biggest LVs
-    # because we assume that the data of the backup can still be restored into a big LV after it was shrinked a bit.
+    # The most reasonable LVs that can shrink a bit with a "minimal changes" approach are the biggest LVs
+    # because we assume that the data of the backup can still be restored into a big LV after it was shrunk a bit.
     # So we sort the 'lvs' output lines by the size of the LVs (4th field in the output lines, 1st field is two blanks)
     # so that the biggest LVs get listed last in disklayout.conf and get recreated last during "rear recover"
     # so 'lvcreate' may only fail with "Volume group ... has insufficient free space" for some of the biggest LVs.
     # Additionally it had happened during my <jsmeix@suse.de> initial tests that shrinking the 'swap' LV somehow caused
     # that the recreated system did not boot (boot screen showed GRUB but there it hung with constant 100% CPU usage)
-    # so automatically shrinking only the biggest LVs avoids that a relatively small 'swap' LV gets shrinked.
+    # so automatically shrinking only the biggest LVs avoids that a relatively small 'swap' LV gets shrunk.
     # With 'sort -n -t ':' -k 4' the above 'lvs' output lines become
-    #   :swap:system:1262485504:linear::0:1:0:1262485504
-    #   :home:system:6148849664:linear::0:1:0:6148849664
-    #   :root:system:14050918400:linear::0:1:0:14050918400
-    # so only the 'root' LV may get automatically shrinked if needed.
+    #   :swap:system:1262485504:linear::0:1:0:1262485504:
+    #   :home:system:6148849664:linear::0:1:0:6148849664:
+    #   :root:system:14050918400:linear::0:1:0:14050918400:
+    # so only the 'root' LV may get automatically shrink if needed.
     lvm lvs --separator=':' --noheadings --units b --nosuffix -o $lvs_fields | sort -n -t ':' -k 4 | while read line ; do
 
         # Output lvmvol header only once to DISKLAYOUT_FILE:
@@ -304,14 +304,23 @@ local lvs_exit_code
         # With the above example segmentsize=19927138304 and segmentsize=1535115264
         segmentsize="$( echo "$line" | awk -F ':' '{ print $10 }' )"
 
-        # TODO: Explain what that code is meant to do.
-        # In particular a more explanatory variable name than 'kval' might help.
-        # In 110_include_lvm_code.sh there is a comment what 'kval' means there
-        #   # kval: "key:value" pairs, separated by spaces
-        # so probably 'kval' means the same here, but what is 'infokval'?
+        # With the above example poolmetadatasize=""
+        poolmetadatasize="$( echo "$line" | awk -F ':' '{ print $11 }' )"
+
+        # kval is a string of space-separated key:value pairs. Key names are chosen to represent
+        # long options to lvcreate, and value will be the parameter for each long option.
+        # e.g. "chunksize:${chunksize}b" will eventually become a --chunksize=${chunksize}b
+        # argument to lvcreate.
+        # This way 110_include_lvm_code.sh which constructs the arguments to lvcreate
+        # can be kept generic and does not need to be updated every time an argument is added,
+        # as long as the argument can follow this generic scheme.
+        # infokval are key:value pairs that are not used when restoring the layout
+        # and are kept in disklayout.conf only as comments for information
+        # (because the setting is not easy or desirable to preserve).
         kval=""
         infokval=""
         [ -z "$thinpool" ] || kval="${kval:+$kval }thinpool:$thinpool"
+        [ -z "$poolmetadatasize" ] || kval="${kval:+$kval }poolmetadatasize:${poolmetadatasize}b"
         [ $chunksize -eq 0 ] || kval="${kval:+$kval }chunksize:${chunksize}b"
         [ $stripesize -eq 0 ] || kval="${kval:+$kval }stripesize:${stripesize}b"
         [ $segmentsize -eq $size ] || infokval="${infokval:+$infokval }segmentsize:${segmentsize}b"
@@ -387,7 +396,7 @@ Log "End saving LVM layout"
 # see the create_lvmdev create_lvmgrp create_lvmvol functions in layout/prepare/GNU/Linux/110_include_lvm_code.sh
 # what program calls are written to diskrestore.sh
 # cf. https://github.com/rear/rear/issues/1963
-egrep -q '^lvmdev |^lvmgrp |^lvmvol ' $DISKLAYOUT_FILE && REQUIRED_PROGS+=( lvm ) || true
+grep -Eq '^lvmdev |^lvmgrp |^lvmvol ' $DISKLAYOUT_FILE && REQUIRED_PROGS+=( lvm ) || true
 
 # vim: set et ts=4 sw=4:
 

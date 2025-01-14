@@ -5,15 +5,13 @@ jobs:
   - fedora-all
   - centos-stream-8-x86_64
   - centos-stream-9-x86_64
-  - opensuse-leap-15.3-x86_64
-  - opensuse-tumbleweed-x86_64
   trigger: pull_request
-- job: upstream_koji_build
-  scratch: True
+- job: tests
+  trigger: pull_request
+  metadata:
   targets:
-  - fedora-latest-stable
-  - epel-all
-  trigger: pull_request
+  - centos-stream-8-x86_64
+  - centos-stream-9-x86_64
 specfile_path: packaging/rpm/rear.spec
 files_to_sync:
 - .packit.yaml

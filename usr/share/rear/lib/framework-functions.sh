@@ -99,20 +99,33 @@ function SourceStage () {
     # In debug modes show what stage is run also on the user's terminal:
     test "$DEBUG" && Print "Running '$stage' stage ======================"
     # We always source scripts in the same subdirectory structure.
-    # The {...,...,...} way of writing it is a shell shortcut that expands as intended.
-    # The sed pipe is used to sort the scripts by their 3-digit number independent of the directory depth of the script.
-    # Basically sed inserts a ! before and after the number which makes the number field nr. 2
-    # when dividing lines into fields by ! so that the subsequent sort can sort by that field.
+    # The ls -d {...,...,...} within the $SHARE_DIR/$stage directory expands as intended.
+    # The intent is to only list those scripts below the $SHARE_DIR/$stage directory
+    # that match the specified backup method and output method
+    # and that match the used operating system and architecture and Linux distribution.
+    # The pipe sorts the listed scripts by their 3-digit number independent of the directory of the script.
+    # We want to make sure that there are no duplicates in the listed scripts
+    # so that each script gets executed at most once.
+    # cf. https://github.com/rear/rear/issues/3149#issuecomment-1935586311
+    # First sed inserts a ! before and after the script number
+    # e.g. default/123_some_script.sh becomes default/!123!_some_script.sh
+    # which makes the script number field nr. 2 when dividing lines into fields by !
+    # so that the subsequent sort can sort by that field.
+    # Numeric sort is not needed because all script numbers have same length
+    # (without numeric sort 2 and 10 get sorted as first 10 then 2).
     # The final tr removes the ! to restore the original script name.
-    # That code would break if ! is used in a directory name of the ReaR subdirectory structure
-    # but those directories below ReaR's $SHARE_DIR/$stage directory are not named by the user
+    # This code breaks if ! or a leading 3-digit number with underscore
+    # is used in a directory name of the ReaR subdirectory structure
+    # but those directories below the $SHARE_DIR/$stage directory are not named by the user
     # so that it even works when a user runs a git clone in his .../ReaRtest!/ directory.
+    # For example a new backup method named '123_backup' is not possible
+    # but a new backup method named '123backup' (without underscore) is possible.
     local scripts=( $( cd $SHARE_DIR/$stage
                  ls -d  {default,"$ARCH","$OS","$OS_MASTER_VENDOR","$OS_MASTER_VENDOR_ARCH","$OS_MASTER_VENDOR_VERSION","$OS_VENDOR","$OS_VENDOR_ARCH","$OS_VENDOR_VERSION"}/*.sh \
               "$BACKUP"/{default,"$ARCH","$OS","$OS_MASTER_VENDOR","$OS_MASTER_VENDOR_ARCH","$OS_MASTER_VENDOR_VERSION","$OS_VENDOR","$OS_VENDOR_ARCH","$OS_VENDOR_VERSION"}/*.sh \
               "$OUTPUT"/{default,"$ARCH","$OS","$OS_MASTER_VENDOR","$OS_MASTER_VENDOR_ARCH","$OS_MASTER_VENDOR_VERSION","$OS_VENDOR","$OS_VENDOR_ARCH","$OS_VENDOR_VERSION"}/*.sh \
     "$OUTPUT"/"$BACKUP"/{default,"$ARCH","$OS","$OS_MASTER_VENDOR","$OS_MASTER_VENDOR_ARCH","$OS_MASTER_VENDOR_VERSION","$OS_VENDOR","$OS_VENDOR_ARCH","$OS_VENDOR_VERSION"}/*.sh \
-                 | sed -e 's#/\([0-9][0-9][0-9]\)_#/!\1!_#g' | sort -t \! -k 2 | tr -d \! ) )
+                 | sed -e 's#/\([0-9][0-9][0-9]\)_#/!\1!_#g' | sort -t \! -k 2 -u | tr -d \! ) )
     # If no script is found, then the scripts array contains only one element '.'
     if test "$scripts" = '.' ; then
         Log "Finished running empty '$stage' stage"
@@ -122,9 +135,9 @@ function SourceStage () {
     local script=''
     for script in "${scripts[@]}" ; do
         # Tell the user about unexpected named scripts.
-        # All sripts must be named with a leading three-digit number NNN_something.sh
+        # All scripts must be named with a leading three-digit number NNN_something.sh
         # otherwise the above sorting by the 3-digit number may not work as intended
-        # so that sripts without leading 3-digit number are likely run in wrong order:
+        # so that scripts without leading 3-digit number are likely run in wrong order:
         grep -q '^[0-9][0-9][0-9]_' <<< $( basename $script ) || LogPrintError "Script '$script' without leading 3-digit number 'NNN_' is likely run in wrong order"
         Source $SHARE_DIR/$stage/"$script"
     done

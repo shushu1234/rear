@@ -1,14 +1,15 @@
 # In some dists (e.g. Ubuntu) bash is not the default shell. Statements like
 #   cp -a etc/rear/{mappings,templates} ...
-# assumes bash. So its better to set SHELL
-SHELL = /bin/bash
+# assumes bash. So its better to set SHELL to bash explicitly, using the one from PATH
+# to also work on MacOS with Homebrew-installed bash
+SHELL = bash
 
 # disable parallel execution of make
 .NOTPARALLEL:
 
 DESTDIR =
 OFFICIAL =
-DIST_CONTENT = COPYING  doc  etc  MAINTAINERS  Makefile  packaging  README.adoc  tests  tools  usr
+DIST_CONTENT = COPYING  doc  etc  MAINTAINERS  Makefile  packaging  README.md  tests  tools  usr
 
 ### Get version from Relax-and-Recover itself
 rearbin = usr/sbin/rear
@@ -85,7 +86,8 @@ else
 RUNASUSER :=
 endif
 
-tarparams = --exclude-from=.gitignore --exclude=.gitignore --exclude=".??*" $(DIST_CONTENT)
+# .gitignore is optional, avoid tar errors if it does not exist, e.g. in a dist archive
+tarparams = $(shell test -f .gitignore && echo --exclude-from=.gitignore --exclude=.gitignore) --exclude=".??*" $(DIST_CONTENT)
 
 DIST_FILES := $(shell tar -cv -f /dev/null $(tarparams))
 
@@ -165,10 +167,10 @@ install-config:
 install-bin:
 	@echo -e "\033[1m== Installing binary ==\033[0;0m"
 	install -Dp -m0755 $(rearbin) $(DESTDIR)$(sbindir)/rear
-	sed -i -e 's,^CONFIG_DIR=.*,CONFIG_DIR="$(sysconfdir)/rear",' \
-		-e 's,^SHARE_DIR=.*,SHARE_DIR="$(datadir)/rear",' \
-		-e 's,^VAR_DIR=.*,VAR_DIR="$(localstatedir)/lib/rear",' \
-		-e 's,^LOG_DIR=.*,LOG_DIR="$(localstatedir)/log/rear",' \
+	sed -i -e 's,^CONFIG_DIR=.*,CONFIG_DIR="$$REAR_DIR_PREFIX$(sysconfdir)/rear",' \
+		-e 's,^SHARE_DIR=.*,SHARE_DIR="$$REAR_DIR_PREFIX$(datadir)/rear",' \
+		-e 's,^VAR_DIR=.*,VAR_DIR="$$REAR_DIR_PREFIX$(localstatedir)/lib/rear",' \
+		-e 's,^LOG_DIR=.*,LOG_DIR="$$REAR_DIR_PREFIX$(localstatedir)/log/rear",' \
 		$(DESTDIR)$(sbindir)/rear
 
 install-data:

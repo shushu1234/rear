@@ -3,16 +3,27 @@
 #
 # File system support functions
 
+function btrfs_snapshot_subvolume_exists() {
+    # returns true if the btrfs snapshot subvolume ($2) exists in the Btrfs
+    # file system at the mount point ($1).
+
+    # Use -s so that btrfs subvolume list considers snapshots only
+    btrfs_subvolume_exists "$1" "$2" "-s"
+}
+
 function btrfs_subvolume_exists() {
     # returns true if the btrfs subvolume ($2) exists in the Btrfs file system at the mount point ($1).
     local subvolume_mountpoint="$1" btrfs_subvolume_path="$2"
+
+    # extra options for the btrfs subvolume list command ($3)
+    local btrfs_extra_opts="$3"
 
     # A root subvolume can be assumed to always exist
     [ "$btrfs_subvolume_path" == "/" ] && return 0
 
     # A non-root subvolume exists if the btrfs subvolume list contains its complete path at the end of one line.
     # This code deliberately uses a plain string comparison rather than a regexp.
-    btrfs subvolume list -a "$subvolume_mountpoint" | sed -e 's; path <FS_TREE>/; path ;' |
+    btrfs subvolume list -a $btrfs_extra_opts "$subvolume_mountpoint" | sed -e 's; path <FS_TREE>/; path ;' |
     awk -v path="$btrfs_subvolume_path" '
         BEGIN {
             match_string = " path " path;
@@ -255,4 +266,41 @@ function total_target_fs_used_disk_space() {
     df --total --local -h \
         --exclude-type=tmpfs --exclude-type=devtmpfs --exclude-type=sysfs --exclude-type=none \
         $(mount | sed -n -e "\#^/.*$TARGET_FS_ROOT#s/ .*//p") | sed -E -n -e '$s/[^ ]+ +[^ ]+ +([^ ]+).*/\1/p'
+}
+
+
+# $1 is a mount command argument (string containing comma-separated
+# mount options). The remaining arguments to the function ($2 ... )
+# specify the mount options to remove from $1, together with a trailing "="
+# and any value that follows each option.
+# For example, the call
+# "remove_mount_options_values nodev,uid=1,rw,gid=1 uid gid"
+# returns "nodev,rw".
+# There is no support for removing a mount option without a value and "=",
+# so "remove_mount_options_values nodev,uid=1,rw,gid=1 rw" will not work.
+# The function will return the modified string on stdout.
+
+function remove_mount_options_values () {
+    local str="$1"
+
+    shift
+    # First add a comma at the end so that it is easier to remove a mount option at the end:
+    str="${str/%/,}"
+    for i in "$@" ; do
+        # FIXME this also removes trailing strings at the end of longer words
+        # For example if one wants to remove any id=... option,
+        # the function will also replace "uid=1" by "u" by removing
+        # the trailing "id=1", which is not intended.
+        # Not easy to fix because $str can contain prefixes which are not
+        # mount options but arguments to the mount command itself
+        # (in particluar, "-o ").
+        # FIXME this simple approach would fail in case of mount options
+        # containing commas, for example the "context" option values,
+        # see mount(8)
+
+        # the extglob shell option is enabled in rear
+        str="${str//$i=*([^,]),/}"
+    done
+    # Remove all commas at the end:
+    echo "${str/%,/}"
 }

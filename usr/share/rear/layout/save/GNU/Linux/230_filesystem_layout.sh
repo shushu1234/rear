@@ -231,6 +231,13 @@ fi
                 echo -n " uuid=$uuid label=$label"
                 ;;
             (btrfs)
+                # FIXME: Support for multi-disk BTRFS should be implemented sooner or later
+                # because it is the default layout for multi-disk Fedora Workstation installations.
+                # See: https://github.com/rear/rear/issues/2028
+                if grep -qE 'Total devices ([2-9]|[1-9][0-9]+) ' <(btrfs filesystem show "$mountpoint"); then
+                    Error "Mounpoint $mountpoint points to a BTRFS filesystem spanning multiple disk devices which is not yet supported. See: https://github.com/rear/rear/issues/2028"
+                fi
+
                 # Remember devices and mountpoints of the btrfs filesystems for the btrfs subvolume layout stuff below:
                 btrfs_devices_and_mountpoints+=" $device,$mountpoint"
                 uuid=$( btrfs filesystem show $device | grep -o 'uuid: .*' | cut -d ':' -f 2 | tr -d '[:space:]' )
@@ -308,8 +315,8 @@ fi
             if test $( btrfs subvolume list -a $btrfs_mountpoint | wc -l ) -gt 0 ; then
                 subvolume_list=$( btrfs subvolume list -a $btrfs_mountpoint | tr -s '[:blank:]' ' ' | cut -d ' ' -f 2,9 | sed -e 's/<FS_TREE>\///' )
                 prefix=$( echo "btrfsnormalsubvol $btrfs_device $btrfs_mountpoint" | sed -e 's/\//\\\//g' )
-                # Get the IDs of the snapshot subvolumes as pattern for "egrep -v" e.g. like
-                #   egrep -v '^279 |^280 |^281 |^282 |^285 |^286 |^289 |^290 '
+                # Get the IDs of the snapshot subvolumes as pattern for "grep -Ev" e.g. like
+                #   grep -Ev '^279 |^280 |^281 |^282 |^285 |^286 |^289 |^290 '
                 # to exclude snapshot subvolume lines to get only the normal subvolumes.
                 # btrfs subvolume IDs are only unique for one same btrfs filesystem
                 # which is the case here because the btrfs_device_and_mountpoint is fixed herein
@@ -320,7 +327,7 @@ fi
                 # When there are no snapshot subvolumes $snapshot_subvolumes_pattern variable will be empty.
                 # This special case must be handled properly when setting up $subvolumes_exclude_pattern
                 # otherwise ReaR would not recreate the btrfs subvolumes during recovery
-                # because an empty pattern in the below egrep -v '|...' command would
+                # because an empty pattern in the below grep -Ev '|...' command would
                 # exclude all lines (see https://github.com/rear/rear/pull/1435):
                 if test -z "$snapshot_subvolumes_pattern" ; then
                     subvolumes_exclude_pattern=""
@@ -366,7 +373,7 @@ fi
                     # $snapshot_subvolumes_pattern variable will be empty. This special case
                     # must be handled properly when setting up $subvolumes_exclude_pattern
                     # otherwise ReaR would not recreate the btrfs subvolumes during recovery
-                    # because an empty pattern in the below egrep -v '|...' command would
+                    # because an empty pattern in the below grep -Ev '|...' command would
                     # exclude all lines (see https://github.com/rear/rear/pull/1435):
                     if test -z "$snapshot_subvolumes_pattern" ; then
                         subvolumes_exclude_pattern="$snapper_base_subvolume"
@@ -391,19 +398,19 @@ fi
                         echo "# Because any '@/.snapshots' subvolume would let 'snapper/installation-helper --step 1' fail"
                         echo "# such subvolumes are deactivated here to not let 'rear recover' fail:"
                         if test -z "$snapshot_subvolumes_pattern" ; then
-                            # With an empty snapshot_subvolumes_pattern egrep -v '' would exclude all lines:
+                            # With an empty snapshot_subvolumes_pattern grep -Ev '' would exclude all lines:
                             echo "$subvolume_list" | grep "$snapper_base_subvolume" | sed -e "s/^/#$prefix /"
                         else
-                            echo "$subvolume_list" | egrep -v "$snapshot_subvolumes_pattern" | grep "$snapper_base_subvolume" | sed -e "s/^/#$prefix /"
+                            echo "$subvolume_list" | grep -Ev "$snapshot_subvolumes_pattern" | grep "$snapper_base_subvolume" | sed -e "s/^/#$prefix /"
                         fi
                     fi
                 fi
                 # Output btrfs normal subvolumes:
                 if test -z "$subvolumes_exclude_pattern" ; then
-                    # With an empty subvolumes_exclude_pattern egrep -v '' would exclude all lines:
+                    # With an empty subvolumes_exclude_pattern grep -Ev '' would exclude all lines:
                     echo "$subvolume_list" | sed -e "s/^/$prefix /"
                 else
-                    echo "$subvolume_list" | egrep -v "$subvolumes_exclude_pattern" | sed -e "s/^/$prefix /"
+                    echo "$subvolume_list" | grep -Ev "$subvolumes_exclude_pattern" | sed -e "s/^/$prefix /"
                 fi
             fi
         done
@@ -434,6 +441,7 @@ fi
                     # Output header only once:
                     btrfsmountedsubvol_entry_exists="yes"
                     echo "# All mounted btrfs subvolumes (including mounted btrfs default subvolumes and mounted btrfs snapshot subvolumes)."
+                    echo "# Mounted btrfs snapshot subvolumes are autoexcluded."
                     if test "$findmnt_FSROOT_works" ; then
                         echo "# Determined by the findmnt command that shows the mounted btrfs_subvolume_path."
                         echo "# Format: btrfsmountedsubvol <device> <subvolume_mountpoint> <mount_options> <btrfs_subvolume_path>"
@@ -453,10 +461,10 @@ fi
                     # (using subvolid=... can fail because the subvolume ID can be different during system recovery).
                     # Because both "mount ... -o subvol=/path/to/subvolume" and "mount ... -o subvol=path/to/subvolume" work
                     # the subvolume path can be specified with or without leading '/'.
-                    # Aviod SC1087 by using ${subvolume_mountpoint} with curly brackets because
+                    # Avoid SC1087 by using ${subvolume_mountpoint} with curly brackets because
                     # we need the subsequent square brackets literally (subvolume_mountpoint is a string, not an array):
-                    btrfs_subvolume_path=$( egrep "[[:space:]]${subvolume_mountpoint}[[:space:]]+btrfs[[:space:]]" /etc/fstab \
-                                            | egrep -v '^[[:space:]]*#' \
+                    btrfs_subvolume_path=$( grep -E "[[:space:]]${subvolume_mountpoint}[[:space:]]+btrfs[[:space:]]" /etc/fstab \
+                                            | grep -E -v '^[[:space:]]*#' \
                                             | grep -o 'subvol=[^ ]*' | cut -s -d '=' -f 2 )
                 fi
                 # Remove leading '/' from btrfs_subvolume_path (except it is only '/') to have same syntax for all entries and
@@ -469,7 +477,10 @@ fi
                 # Finally, test whether the btrfs subvolume listed as mounted actually exists. A running docker
                 # daemon apparently can convince the system to list a non-existing btrfs volume as mounted.
                 # See https://github.com/rear/rear/issues/1496
-                if btrfs_subvolume_exists "$subvolume_mountpoint" "$btrfs_subvolume_path"; then
+                if btrfs_snapshot_subvolume_exists "$subvolume_mountpoint" "$btrfs_subvolume_path"; then
+                    # Exclude mounted snapshot subvolumes
+                    echo "#btrfsmountedsubvol $device $subvolume_mountpoint $mount_options $btrfs_subvolume_path"
+                elif btrfs_subvolume_exists "$subvolume_mountpoint" "$btrfs_subvolume_path"; then
                     echo "btrfsmountedsubvol $device $subvolume_mountpoint $mount_options $btrfs_subvolume_path"
                 else
                     LogPrintError "Ignoring non-existing btrfs subvolume listed as mounted: $subvolume_mountpoint"
@@ -500,7 +511,7 @@ fi
                     # see https://btrfs.wiki.kernel.org/index.php/Mount_options
                     test "/" != "$btrfs_subvolume_path" && btrfs_subvolume_path=${btrfs_subvolume_path#/}
                     if test -n "$btrfs_subvolume_path" ; then
-                        # Add the following binaries to the rescue image in order to be able to change required attrs uppon recovery.
+                        # Add the following binaries to the rescue image in order to be able to change required attrs upon recovery.
                         # See conf/examples/SLE12-SP2-btrfs-example.conf and https://github.com/rear/rear/issues/2927
                         REQUIRED_PROGS+=( chattr )
                         PROGS+=( lsattr )

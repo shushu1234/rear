@@ -29,7 +29,7 @@
 # more than one disk with same size is found on the replacement hardware
 # i.e. when there is more than one possible target disk.
 # Accordingly ReaR goes by default not into its MIGRATION_MODE
-# only if for each used disk size on the original system eaxctly one
+# only if for each used disk size on the original system exactly one
 # possible target disk with same size is found on the replacement hardware.
 
 # Nothing to do when MIGRATION_MODE is already set:
@@ -225,10 +225,10 @@ else
     # but sufficient time for the user to read and understand the message
     # so that the user could deliberately intervene and enforce MIGRATION_MODE:
     local timeout=30
-    # Have that timeout not bigger than USER_INPUT_TIMEOUT
-    # e.g. for automated testing a small USER_INPUT_TIMEOUT may be specified and
-    # we do not want to delay it here more than what USER_INPUT_TIMEOUT specifies:
-    test "$timeout" -gt "$USER_INPUT_TIMEOUT" && timeout="$USER_INPUT_TIMEOUT"
+    # Have that timeout not bigger than USER_INPUT_INTERRUPT_TIMEOUT (by default 30 seconds)
+    # e.g. for automated testing a small USER_INPUT_INTERRUPT_TIMEOUT may be specified and
+    # we do not want to delay it here more than what USER_INPUT_INTERRUPT_TIMEOUT specifies:
+    test "$timeout" -gt "$USER_INPUT_INTERRUPT_TIMEOUT" && timeout="$USER_INPUT_INTERRUPT_TIMEOUT"
     local prompt="Proceed with '$WORKFLOW' (yes) otherwise manual disk layout configuration is enforced"
     local input_value=""
     local wilful_input=""

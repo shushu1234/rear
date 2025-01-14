@@ -2,9 +2,9 @@
 # 400_restore_backup.sh
 #
 
-local scheme=$( url_scheme $BACKUP_URL )
-local path=$( url_path $BACKUP_URL )
-local opath=$( backup_path $scheme $path )
+local scheme="$( url_scheme "$BACKUP_URL" )"
+local path="$( url_path "$BACKUP_URL" )"
+local opath="$( backup_path "$scheme" "$path" )"
 
 # Create backup restore log file name:
 local backup_restore_log_dir="$VAR_DIR/restore"
@@ -21,14 +21,12 @@ local backup_restore_log_suffix="restore.log"
 test "$CONFIG_APPEND_FILES" && backup_restore_log_prefix=$backup_restore_log_prefix.$( echo -n $CONFIG_APPEND_FILES | tr -d -c '[:alnum:]/[:space:]' | tr -s '/[:space:]' ':_' )
 local restore_input_basename=""
 
-mkdir -p $BUILD_DIR/outputfs/$NETFS_PREFIX
-
 # The RESTORE_ARCHIVES array contains the restore input files.
 # If it is not set, RESTORE_ARCHIVES is only one element which is the backup archive:
 test "$RESTORE_ARCHIVES" || RESTORE_ARCHIVES=( "$backuparchive" )
 
 # In case of 'tar' the backup restore prog needs to be feed by another program
-# if the backup is splitted and then restore input is not a file but a FIFO
+# if the backup is split and then restore input is not a file but a FIFO
 # i.e. RESTORE_ARCHIVES is then only one element which is the FIFO
 # In this case launch another subshell that runs the feeder program:
 waiting_for_medium_flag_file=$TMP_DIR/waiting_for_restore_medium
@@ -56,7 +54,7 @@ if test -f $TMP_DIR/backup.splitted ; then
                 if mountpoint -q "$BUILD_DIR/outputfs" ; then
                     umount "$BUILD_DIR/outputfs" || LogPrintError "Could not umount what is mounted at $BUILD_DIR/outputfs"
                 fi
-                cdrom_drive_names=$( cat /proc/sys/dev/cdrom/info | grep -i "drive name:" | awk '{print $3 " " $4}' )
+                cdrom_drive_names="$( cat /proc/sys/dev/cdrom/info | grep -i "drive name:" | awk '{print $3 " " $4}' )"
                 ProgressInfo "Insert medium labelled $vol_name (containing $backup_file_name) in a CD-ROM drive ($cdrom_drive_names) ..."
                 sleep 3
                 for cdrom_dev in $cdrom_drive_names ; do
@@ -108,8 +106,8 @@ fi
 # The actual restoring:
 for restore_input in "${RESTORE_ARCHIVES[@]}" ; do
     # Create backup restore log file name (a different one for each restore_input).
-    # Each restore_input is a path like '/tmp/rear.XXXX/outputfs/f121/backup.tar.gz':
-    restore_input_basename=$( basename $restore_input )
+    # Each restore_input is a path like '/var/tmp/rear.XXXX/outputfs/f121/backup.tar.gz':
+    restore_input_basename="$( basename "$restore_input" )"
     backup_restore_log_file=$backup_restore_log_dir/$backup_restore_log_prefix.$restore_input_basename.$MASTER_PID.$backup_restore_log_suffix
     cat /dev/null >$backup_restore_log_file
     LogPrint "Restoring from '$restore_input' (restore log in $backup_restore_log_file) ..."
@@ -266,7 +264,7 @@ for restore_input in "${RESTORE_ARCHIVES[@]}" ; do
                     restored_KiB_per_second=$(( restored_KiB / restore_seconds ))
                     LogPrint "Restored $restored_MiB MiB in $restore_seconds seconds [avg. $restored_KiB_per_second KiB/sec]"
                 else
-                    # A 'tar -x --totals' stderr messsage should look like 'Total bytes read: 7924664320 (7.4GiB, 95MiB/s)'
+                    # A 'tar -x --totals' stderr message should look like 'Total bytes read: 7924664320 (7.4GiB, 95MiB/s)'
                     # cf. https://www.gnu.org/software/tar/manual/html_section/tar_25.html
                     # in the rear runtime logfile it appears like (without leading blanks):
                     #   3823429+1 records in
