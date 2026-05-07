@@ -47,7 +47,41 @@ local archive_cache_lines_last_shown=0
 # When pagination is disabled by the user, show everything
 [[ $BORGBACKUP_RESTORE_ARCHIVES_SHOW_MAX -eq 0 ]] \
     && BORGBACKUP_RESTORE_ARCHIVES_SHOW_MAX=$archive_cache_lines_total
-
+# -----------------------------------------------------------------------------
+# Optional: Node-specific archive restriction for BORG restores
+#
+# If ENABLE_BORG_NODE_FILTER is set to "yes" (e.g. in /etc/rear/local.conf),
+# this section restricts the available restore archives to only the most recent
+# (highest-numbered) backup with this node's BORGBACKUP_ARCHIVE_PREFIX.
+#
+# This prevents accidental restore of the wrong system in shared repositories,
+# especially in unattended/AUTO_CONFIRM scenarios.
+#
+# If no matching archive is found, ReaR aborts with a clear error and NEVER
+# restores from another node's backup.
+#
+# This block is fully backward compatible: if ENABLE_BORG_NODE_FILTER is not "yes",
+# ReaR shows all available BORG archives as before.
+# -----------------------------------------------------------------------------
+if [[ "${ENABLE_BORG_NODE_FILTER}" == "yes" ]]; then
+  if [ -n "$BORGBACKUP_ARCHIVE_PREFIX" ] && [ -f "$BORGBACKUP_ARCHIVE_CACHE" ]; then
+    # Find highest-numbered archive for this node prefix
+    latest_archive=$(grep "^${BORGBACKUP_ARCHIVE_PREFIX}_" "$BORGBACKUP_ARCHIVE_CACHE" | sort -t_ -k2,2n | tail -n 1)
+    if [ -n "$latest_archive" ]; then
+      echo "$latest_archive" > "$BORGBACKUP_ARCHIVE_CACHE"
+      archive_cache_lines_total=1
+      export BORGBACKUP_ARCHIVE_TO_RECOVER=1
+    else
+      # Abort: No archive for this node found! (prevents cross-node restore)
+      Error "No archives found with prefix ${BORGBACKUP_ARCHIVE_PREFIX}_ in the Borg cache! Aborting to prevent auto-restore of WRONG node."
+    fi
+  fi
+fi
+#How to Enable After Your Change
+#Just add this to your /etc/rear/local.conf:
+#ENABLE_BORG_NODE_FILTER="yes"
+#export ENABLE_BORG_NODE_FILTER
+# End  Node-specific archive restriction for BORG restores
 while true ; do
     UserOutput ""
     LogUserOutput "$( cat -n "$BORGBACKUP_ARCHIVE_CACHE" \
