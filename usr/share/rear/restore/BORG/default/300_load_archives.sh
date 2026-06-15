@@ -63,25 +63,21 @@ local archive_cache_lines_last_shown=0
 # This block is fully backward compatible: if ENABLE_BORG_NODE_FILTER is not "yes",
 # ReaR shows all available BORG archives as before.
 # -----------------------------------------------------------------------------
-if [[ "${ENABLE_BORG_NODE_FILTER}" == "yes" ]]; then
-  if [ -n "$BORGBACKUP_ARCHIVE_PREFIX" ] && [ -f "$BORGBACKUP_ARCHIVE_CACHE" ]; then
-    # Find highest-numbered archive for this node prefix
-    latest_archive=$(grep "^${BORGBACKUP_ARCHIVE_PREFIX}_" "$BORGBACKUP_ARCHIVE_CACHE" | sort -t_ -k2,2n | tail -n 1)
-    if [ -n "$latest_archive" ]; then
-      echo "$latest_archive" > "$BORGBACKUP_ARCHIVE_CACHE"
-      archive_cache_lines_total=1
-      export BORGBACKUP_ARCHIVE_TO_RECOVER=1
+if is_true "$ENABLE_BORG_NODE_FILTER"; then
+    [[ -n $BORGBACKUP_ARCHIVE_PREFIX ]] || Error "ENABLE_BORG_NODE_FILTER=yes but BORGBACKUP_ARCHIVE_PREFIX is empty"
+    [[ -s $BORGBACKUP_ARCHIVE_CACHE ]] || Error "ENABLE_BORG_NODE_FILTER=yes but Borg archive cache '$BORGBACKUP_ARCHIVE_CACHE' is missing or empty"
+
+    # Find highest-numbered archive for this node prefix (archive names are ${BORGBACKUP_ARCHIVE_PREFIX}_<number>)
+    latest_archive=$( grep "^${BORGBACKUP_ARCHIVE_PREFIX}_" "$BORGBACKUP_ARCHIVE_CACHE" | LC_ALL=C sort -t_ -k2,2n | tail -n 1 )
+    if [[ -n $latest_archive ]]; then
+        printf '%s\n' "$latest_archive" > "$BORGBACKUP_ARCHIVE_CACHE"
+        archive_cache_lines_total=1
+        BORGBACKUP_RESTORE_ARCHIVES_SHOW_MAX=1
+        LogUserOutput "ENABLE_BORG_NODE_FILTER enabled: restricting restore candidates to the latest ${BORGBACKUP_ARCHIVE_PREFIX}_* archive."
     else
-      # Abort: No archive for this node found! (prevents cross-node restore)
-      Error "No archives found with prefix ${BORGBACKUP_ARCHIVE_PREFIX}_ in the Borg cache! Aborting to prevent auto-restore of WRONG node."
+        Error "ENABLE_BORG_NODE_FILTER=yes but no archives with prefix '${BORGBACKUP_ARCHIVE_PREFIX}_' exist in Borg repository $BORGBACKUP_REPO on ${BORGBACKUP_HOST:-USB}. Aborting to avoid restoring from a different node."
     fi
-  fi
 fi
-#How to Enable After Your Change
-#Just add this to your /etc/rear/local.conf:
-#ENABLE_BORG_NODE_FILTER="yes"
-#export ENABLE_BORG_NODE_FILTER
-# End  Node-specific archive restriction for BORG restores
 while true ; do
     UserOutput ""
     LogUserOutput "$( cat -n "$BORGBACKUP_ARCHIVE_CACHE" \
